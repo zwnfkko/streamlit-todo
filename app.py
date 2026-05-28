@@ -10,6 +10,7 @@ import streamlit as st
 
 # 데이터 파일 경로
 DATA_FILE = "journal_data.json"
+SETTINGS_FILE = "settings.json"
 
 # 카테고리 정의 및 색상
 CATEGORIES = ["회의", "개발", "문서"]
@@ -27,8 +28,50 @@ CATEGORY_BG_COLORS = {
 # 요일 표시 (월~일)
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
+# 사용 가능한 모델 목록
+AVAILABLE_MODELS = [
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-haiku-4-5-20251001",
+]
+
+# 기본 설정값
+DEFAULT_SETTINGS = {
+    "api_key": "",
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 1024,
+    "temperature": 1.0,
+}
+
 
 # ── 2. 데이터 로드/저장 함수 ─────────────────────────────────────────────────
+
+def load_settings() -> dict:
+    """설정 파일에서 앱 설정을 로드. 없으면 기본값 반환."""
+    if not os.path.exists(SETTINGS_FILE):
+        return DEFAULT_SETTINGS.copy()
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        settings = DEFAULT_SETTINGS.copy()
+        settings.update(saved)
+        return settings
+    except (json.JSONDecodeError, IOError):
+        return DEFAULT_SETTINGS.copy()
+
+
+def save_settings(settings: dict) -> None:
+    """설정을 파일에 저장."""
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def get_settings() -> dict:
+    """세션 상태에서 설정을 반환 (없으면 파일에서 로드)."""
+    if "app_settings" not in st.session_state:
+        st.session_state.app_settings = load_settings()
+    return st.session_state.app_settings
+
 
 def load_journals() -> list[dict]:
     """JSON 파일에서 일지 목록을 불러옴. 파일 없으면 빈 리스트 반환."""
@@ -89,20 +132,35 @@ def link_related_journals(target_id: str, related_ids: list[str]) -> None:
 # ── 3. AI 관련 함수 ──────────────────────────────────────────────────────────
 
 def get_anthropic_client() -> anthropic.Anthropic | None:
-    """Anthropic 클라이언트 생성. API 키가 없으면 None 반환."""
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY"))
+    """Anthropic 클라이언트 생성. 설정 → secrets → 환경변수 순으로 API 키 탐색."""
+    settings = get_settings()
+    api_key = (
+        settings.get("api_key")
+        or st.secrets.get("ANTHROPIC_API_KEY", "")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+    )
     if not api_key:
         return None
     return anthropic.Anthropic(api_key=api_key)
+
+
+def _parse_json_response(text: str) -> str:
+    """API 응답에서 순수 JSON 문자열 추출 (```json 블록 대비)."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+    return text
 
 
 def summarize_with_ai(raw_content: str) -> dict | None:
     """Anthropic API를 호출하여 일지 내용을 요약. 실패 시 None 반환."""
     client = get_anthropic_client()
     if not client:
-        st.error("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+        st.error("API 키가 설정되지 않았습니다. 사이드바의 ⚙️ 설정에서 Anthropic API Key를 입력해주세요.")
         return None
 
+    settings = get_settings()
     system_prompt = (
         "당신은 업무 일지 요약 전문가입니다.\n"
         "다음 텍스트를 읽고 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 출력하지 마세요.\n\n"
@@ -116,17 +174,12 @@ def summarize_with_ai(raw_content: str) -> dict | None:
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
+            model=settings.get("model", DEFAULT_SETTINGS["model"]),
+            max_tokens=settings.get("max_tokens", DEFAULT_SETTINGS["max_tokens"]),
             system=system_prompt,
             messages=[{"role": "user", "content": raw_content}],
         )
-        text = response.content[0].text.strip()
-        # JSON 블록 추출 (```json ... ``` 형태일 경우 대비)
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-        return json.loads(text)
+        return json.loads(_parse_json_response(response.content[0].text))
     except json.JSONDecodeError as e:
         st.error(f"AI 응답 파싱 실패: {e}")
         return None
@@ -141,6 +194,7 @@ def recommend_related_journals(current: dict, existing: list[dict]) -> list[str]
     if not client or not existing:
         return []
 
+    settings = get_settings()
     existing_summary = [
         {"id": j["id"], "title": j.get("title", ""), "content_preview": j.get("raw_content", "")[:200]}
         for j in existing
@@ -160,21 +214,126 @@ def recommend_related_journals(current: dict, existing: list[dict]) -> list[str]
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=settings.get("model", DEFAULT_SETTINGS["model"]),
             max_tokens=256,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.content[0].text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-        result = json.loads(text)
+        result = json.loads(_parse_json_response(response.content[0].text))
         return result if isinstance(result, list) else []
     except Exception:
         return []
 
 
 # ── 4. UI 컴포넌트 함수 ──────────────────────────────────────────────────────
+
+def render_settings_page() -> None:
+    """설정 페이지: API 키, 모델, 파라미터 설정 UI."""
+    st.markdown("## ⚙️ 설정")
+    st.caption("애플리케이션 설정 및 환경 구성")
+    st.markdown("---")
+
+    settings = get_settings()
+
+    # ── API 설정 섹션 ──
+    st.markdown("### 🔑 API 설정")
+    st.caption("Anthropic API 키와 모델 설정을 관리하세요")
+
+    # API 키 입력 (표시/숨김 토글)
+    if "show_api_key" not in st.session_state:
+        st.session_state.show_api_key = False
+
+    col_key, col_toggle = st.columns([9, 1])
+    with col_key:
+        key_type = "text" if st.session_state.show_api_key else "password"
+        new_api_key = st.text_input(
+            "Anthropic API Key",
+            value=settings.get("api_key", ""),
+            type=key_type,
+            placeholder="sk-ant-...",
+            key="settings_api_key_input",
+        )
+    with col_toggle:
+        st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
+        toggle_label = "🙈" if st.session_state.show_api_key else "👁️"
+        if st.button(toggle_label, key="toggle_api_key", help="API 키 표시/숨김"):
+            st.session_state.show_api_key = not st.session_state.show_api_key
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    if new_api_key:
+        st.caption("🔒 API 키는 안전하게 암호화되어 로컬에 저장됩니다")
+    else:
+        st.caption("⚠️ API 키를 입력하지 않으면 AI 기능을 사용할 수 없습니다")
+
+    # 모델 선택
+    current_model = settings.get("model", DEFAULT_SETTINGS["model"])
+    model_idx = AVAILABLE_MODELS.index(current_model) if current_model in AVAILABLE_MODELS else 0
+    selected_model = st.selectbox(
+        "모델 선택",
+        options=AVAILABLE_MODELS,
+        index=model_idx,
+        key="settings_model",
+    )
+
+    # 최대 토큰 + 창의성(Temperature)
+    col_tokens, col_temp = st.columns(2)
+    with col_tokens:
+        new_max_tokens = st.number_input(
+            "최대 토큰",
+            min_value=256,
+            max_value=8096,
+            value=settings.get("max_tokens", DEFAULT_SETTINGS["max_tokens"]),
+            step=256,
+            key="settings_max_tokens",
+        )
+    with col_temp:
+        new_temperature = st.number_input(
+            "창의성 (Temperature)",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(settings.get("temperature", DEFAULT_SETTINGS["temperature"])),
+            step=0.1,
+            format="%.1f",
+            key="settings_temperature",
+        )
+
+    st.markdown("---")
+
+    # 저장 / 초기화 버튼
+    col_save, col_reset = st.columns([2, 1])
+    with col_save:
+        if st.button("💾 설정 저장", type="primary", use_container_width=True):
+            new_settings = {
+                "api_key": new_api_key,
+                "model": selected_model,
+                "max_tokens": int(new_max_tokens),
+                "temperature": float(new_temperature),
+            }
+            save_settings(new_settings)
+            st.session_state.app_settings = new_settings
+            st.success("설정이 저장되었습니다.")
+    with col_reset:
+        if st.button("🔄 초기화", use_container_width=True):
+            save_settings(DEFAULT_SETTINGS.copy())
+            st.session_state.app_settings = DEFAULT_SETTINGS.copy()
+            st.info("기본값으로 초기화되었습니다.")
+            st.rerun()
+
+    # 현재 설정 요약 (API 키는 마스킹)
+    st.markdown("---")
+    st.markdown("#### 현재 설정")
+    masked_key = "미설정"
+    if settings.get("api_key"):
+        key_val = settings["api_key"]
+        masked_key = key_val[:8] + "..." + key_val[-4:] if len(key_val) > 12 else "****"
+    st.markdown(
+        f"| 항목 | 값 |\n|------|----|\n"
+        f"| API Key | `{masked_key}` |\n"
+        f"| 모델 | `{settings.get('model', '-')}` |\n"
+        f"| 최대 토큰 | `{settings.get('max_tokens', '-')}` |\n"
+        f"| Temperature | `{settings.get('temperature', '-')}` |"
+    )
+
 
 def render_summary_output(summary: dict) -> None:
     """AI 요약 결과를 포맷에 맞게 렌더링."""
@@ -560,21 +719,19 @@ def main() -> None:
         st.session_state.selected_date = date.today().isoformat()
     if "view_mode" not in st.session_state:
         st.session_state.view_mode = "캘린더"
-
-    # ── 상단 헤더 ──
-    header_col1, header_col2 = st.columns([6, 1])
-    with header_col1:
-        st.title("🗒️ 업무 일지")
-    with header_col2:
-        if st.button("＋ 새 일지", type="primary"):
-            st.session_state.show_form = True
-            st.session_state.prefill_related_id = None
-            st.rerun()
-
-    all_journals = load_journals()
+    if "page" not in st.session_state:
+        st.session_state.page = "main"
 
     # ── 사이드바 ──
     with st.sidebar:
+        # 설정 버튼 (상단)
+        if st.button("⚙️ 설정", use_container_width=True):
+            st.session_state.page = (
+                "main" if st.session_state.page == "settings" else "settings"
+            )
+            st.rerun()
+
+        st.markdown("---")
         st.markdown("### 필터")
         selected_categories = []
         for cat in CATEGORIES:
@@ -586,7 +743,6 @@ def main() -> None:
             )
             if checked:
                 selected_categories.append(cat)
-            # 색상 뱃지 표시
             st.markdown(
                 f"<span style='display:inline-block;width:12px;height:12px;"
                 f"border-radius:50%;background:{color};vertical-align:middle;margin-right:4px'></span>"
@@ -595,16 +751,44 @@ def main() -> None:
             )
 
         st.markdown("---")
+        # API 키 상태 표시
+        settings = get_settings()
+        has_key = bool(
+            settings.get("api_key")
+            or st.secrets.get("ANTHROPIC_API_KEY", "")
+            or os.environ.get("ANTHROPIC_API_KEY", "")
+        )
+        key_status = "🟢 API 연결됨" if has_key else "🔴 API 키 미설정"
+        st.caption(key_status)
+
+        st.markdown("---")
         st.markdown("### 통계")
-        total = len(all_journals)
-        st.metric("전체 일지", total)
+        all_journals_for_stat = load_journals()
+        st.metric("전체 일지", len(all_journals_for_stat))
         for cat in CATEGORIES:
-            cnt = sum(1 for j in all_journals if j.get("category") == cat)
+            cnt = sum(1 for j in all_journals_for_stat if j.get("category") == cat)
             color = CATEGORY_COLORS[cat]
             st.markdown(
                 f"<span style='color:{color}'>●</span> {cat}: **{cnt}**건",
                 unsafe_allow_html=True,
             )
+
+    # ── 설정 페이지 ──
+    if st.session_state.page == "settings":
+        render_settings_page()
+        return
+
+    # ── 상단 헤더 (메인 페이지) ──
+    header_col1, header_col2 = st.columns([6, 1])
+    with header_col1:
+        st.title("🗒️ 업무 일지")
+    with header_col2:
+        if st.button("＋ 새 일지", type="primary"):
+            st.session_state.show_form = True
+            st.session_state.prefill_related_id = None
+            st.rerun()
+
+    all_journals = load_journals()
 
     # ── 새 일지 작성 폼 ──
     if st.session_state.show_form:
