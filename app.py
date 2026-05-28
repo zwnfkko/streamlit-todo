@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta
 from openai import OpenAI
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 # 데이터 파일 경로
 DATA_FILE = "journal_data.json"
@@ -357,105 +356,8 @@ def render_summary_output(summary: dict) -> None:
     st.markdown(f"**실적:** {summary.get('result', '')}")
 
 
-def _build_calendar_html(
-    year: int,
-    month: int,
-    date_journals: dict,
-    selected_date: str,
-    today_str: str,
-) -> str:
-    """그리드 선이 있는 HTML 테이블 캘린더 생성. 날짜 셀 클릭 시 query param으로 전달."""
-    first_day = date(year, month, 1)
-    start_weekday = first_day.weekday()  # 월=0 … 일=6
-
-    if month == 12:
-        last_day = date(year + 1, 1, 1) - timedelta(days=1)
-    else:
-        last_day = date(year, month + 1, 1) - timedelta(days=1)
-
-    cells: list[int | None] = [None] * start_weekday + list(range(1, last_day.day + 1))
-    while len(cells) % 7:
-        cells.append(None)
-
-    rows_html = ""
-    for week_start in range(0, len(cells), 7):
-        rows_html += "<tr>"
-        for col_idx in range(7):
-            day_num = cells[week_start + col_idx]
-            if day_num is None:
-                rows_html += "<td class='empty'></td>"
-                continue
-
-            date_str = f"{year:04d}-{month:02d}-{day_num:02d}"
-            cls = []
-            if col_idx == 5:
-                cls.append("sat")
-            elif col_idx == 6:
-                cls.append("sun")
-            if date_str == selected_date:
-                cls.append("selected")
-            if date_str == today_str:
-                cls.append("today")
-
-            day_inner = f"<span class='dn'>{day_num}</span>"
-
-            badges_parts = []
-            for jj in date_journals.get(date_str, [])[:4]:
-                cat_name = jj.get("category", "")
-                dot_color = CATEGORY_COLORS.get(cat_name, "#888")
-                badges_parts.append(f"<span class='dot' style='background:{dot_color}'></span>")
-            badges = "".join(badges_parts)
-
-            rows_html += (
-                f"<td class='{' '.join(cls)}' onclick=\"sel('{date_str}')\">"
-                f"<div class='dn-wrap'>{day_inner}</div>"
-                f"<div class='dots'>{badges}</div>"
-                "</td>"
-            )
-        rows_html += "</tr>"
-
-    return f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'>
-<style>
-*{{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,sans-serif;}}
-body{{padding:0;background:transparent;}}
-table{{width:100%;border-collapse:collapse;table-layout:fixed;}}
-th{{padding:8px 4px;text-align:center;font-weight:600;font-size:13px;
-  background:#f8f9fa;border:1px solid #dee2e6;color:#333;}}
-th.sat{{color:#E53935;}} th.sun{{color:#1565C0;}}
-td{{border:1px solid #dee2e6;height:76px;vertical-align:top;
-  padding:6px 6px 4px;cursor:pointer;transition:background .12s;}}
-td:hover:not(.empty){{background:#f0f4ff;}}
-td.selected{{background:#e3f2fd;border-color:#1E88E5;}}
-td.empty{{cursor:default;background:#f9f9f9;}}
-td.sat .dn{{color:#E53935;}}
-td.sun .dn{{color:#1565C0;}}
-td.today .dn-wrap .dn{{background:#1E88E5;color:white;border-radius:50%;
-  width:24px;height:24px;line-height:24px;
-  display:inline-flex;align-items:center;justify-content:center;}}
-.dn-wrap{{margin-bottom:4px;}} .dn{{font-size:13px;font-weight:500;}}
-.dots{{display:flex;gap:3px;flex-wrap:wrap;}}
-.dot{{width:8px;height:8px;border-radius:50%;display:inline-block;}}
-</style></head>
-<body>
-<table>
-<thead><tr>
-  <th>월</th><th>화</th><th>수</th><th>목</th><th>금</th>
-  <th class='sat'>토</th><th class='sun'>일</th>
-</tr></thead>
-<tbody>{rows_html}</tbody>
-</table>
-<script>
-function sel(d){{
-  var base=window.parent.location.href.split('?')[0];
-  window.parent.location.href=base+'?cal_date='+d;
-}}
-</script>
-</body></html>"""
-
-
 def render_calendar(journals: list[dict], selected_categories: list[str]) -> None:
-    """월별 HTML 테이블 캘린더 렌더링 (그리드 선 있음, 날짜 셀 직접 클릭)."""
+    """월별 캘린더 렌더링 (st.columns 그리드, 투명 오버레이 버튼으로 날짜 선택)."""
     if "cal_year" not in st.session_state:
         st.session_state.cal_year = date.today().year
     if "cal_month" not in st.session_state:
@@ -494,19 +396,88 @@ def render_calendar(journals: list[dict], selected_categories: list[str]) -> Non
                 st.session_state.cal_month += 1
             st.rerun()
 
-    # HTML 테이블 캘린더 (iframe, 투명 오버레이 버튼 없음)
-    cal_html = _build_calendar_html(
-        year, month, date_journals,
-        st.session_state.get("selected_date", ""),
-        date.today().isoformat(),
-    )
+    # 요일 헤더
+    header_cols = st.columns(7)
+    for i, wd in enumerate(WEEKDAYS):
+        hdr_color = "#E53935" if i == 5 else ("#1565C0" if i == 6 else "#333")
+        header_cols[i].markdown(
+            f"<div style='text-align:center;font-weight:600;font-size:13px;"
+            f"color:{hdr_color};background:#f8f9fa;border:1px solid #dee2e6;"
+            f"padding:8px 4px;box-sizing:border-box'>{wd}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # 날짜 셀 계산
     first_day = date(year, month, 1)
+    start_weekday = first_day.weekday()
     if month == 12:
         last_day = date(year + 1, 1, 1) - timedelta(days=1)
     else:
         last_day = date(year, month + 1, 1) - timedelta(days=1)
-    num_weeks = ((first_day.weekday() + last_day.day - 1) // 7) + 1
-    components.html(cal_html, height=46 + num_weeks * 78, scrolling=False)
+
+    cells: list[int | None] = [None] * start_weekday + list(range(1, last_day.day + 1))
+    while len(cells) % 7:
+        cells.append(None)
+
+    today_str = date.today().isoformat()
+    selected_date = st.session_state.get("selected_date", "")
+
+    # 날짜별 특수 스타일 동적 CSS (선택일·오늘·토일)
+    dyn: list[str] = []
+    if selected_date:
+        dyn.append(
+            f"button[title='{selected_date}']{{background:#e3f2fd !important;"
+            f"border:2px solid #1E88E5 !important;}}"
+        )
+    dyn.append(
+        f"button[title='{today_str}']{{font-weight:700 !important;"
+        f"background:#ddeeff !important;}}"
+    )
+    for ws in range(0, len(cells), 7):
+        for ci, sat_sun_color in [(5, "#E53935"), (6, "#1565C0")]:
+            dn = cells[ws + ci]
+            if dn:
+                ds = f"{year:04d}-{month:02d}-{dn:02d}"
+                dyn.append(f"button[title='{ds}']{{color:{sat_sun_color} !important;}}")
+    st.markdown(f"<style>{''.join(dyn)}</style>", unsafe_allow_html=True)
+
+    for week_start in range(0, len(cells), 7):
+        week_cols = st.columns(7)
+        for col_idx in range(7):
+            day_num = cells[week_start + col_idx]
+            with week_cols[col_idx]:
+                if day_num is None:
+                    st.markdown(
+                        "<div style='height:76px;border:1px solid #dee2e6;"
+                        "background:#f9f9f9;box-sizing:border-box'></div>",
+                        unsafe_allow_html=True,
+                    )
+                    continue
+
+                date_str = f"{year:04d}-{month:02d}-{day_num:02d}"
+                day_jnls = date_journals.get(date_str, [])
+
+                cat_counts: dict[str, int] = {}
+                for jj in day_jnls:
+                    cat = jj.get("category", "")
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+
+                if st.button(str(day_num), key=f"cal_day_{date_str}", help=date_str, use_container_width=True):
+                    st.session_state.selected_date = date_str
+                    st.rerun()
+
+                badges = "".join(
+                    f"<span style='background:{CATEGORY_COLORS[cat]};color:white;"
+                    f"border-radius:10px;padding:1px 6px;"
+                    f"font-size:11px;font-weight:bold;margin:1px'>"
+                    f"{cat_counts[cat]}</span>"
+                    for cat in CATEGORIES
+                    if cat in cat_counts
+                )
+                st.markdown(
+                    f"<div style='text-align:center;min-height:20px;padding:2px 0 4px'>{badges}</div>",
+                    unsafe_allow_html=True,
+                )
 
 
 def render_journal_card(journal: dict, all_journals: list[dict], key_prefix: str = "") -> None:
@@ -746,13 +717,26 @@ def main() -> None:
     st.markdown(
         """
         <style>
-        /* 상단 툴바·헤더·데코레이션 숨김 */
         div[data-testid="stAppToolbar"],
-        header[data-testid="stHeader"],
         div[data-testid="stDecoration"] { display: none !important; }
-        /* 메인 콘텐츠 상단 여백 축소 */
         .block-container { padding-top: 0.5rem !important; }
         details summary { font-weight: bold; }
+        [data-testid="stTabs"] [data-testid="stColumn"] button[kind="secondary"][title] {
+            height: 50px !important; min-height: 50px !important;
+            border-radius: 0 !important; padding: 6px 8px !important;
+            text-align: left !important; font-size: 13px !important;
+            font-weight: 500 !important; color: #333 !important;
+            background-color: white !important; border: 1px solid #dee2e6 !important;
+            white-space: pre-line !important; line-height: 1.5 !important;
+            display: flex !important; flex-direction: column !important;
+            align-items: flex-start !important; justify-content: flex-start !important;
+        }
+        [data-testid="stTabs"] [data-testid="stColumn"] button[kind="secondary"][title]:hover {
+            background-color: #f0f4ff !important; border-color: #aac4e8 !important;
+        }
+        [data-testid="stTabs"] [data-testid="stColumn"] div[data-testid="stButton"] {
+            padding: 0 !important; margin: 0 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -770,24 +754,8 @@ def main() -> None:
     if "page" not in st.session_state:
         st.session_state.page = "main"
 
-    # 카테고리 필터 초기 활성화 상태
-    for _cat in CATEGORIES:
-        if f"cat_active_{_cat}" not in st.session_state:
-            st.session_state[f"cat_active_{_cat}"] = True
-
-    # HTML 캘린더 날짜 클릭 → query param 처리
-    if "cal_date" in st.query_params:
-        st.session_state.selected_date = st.query_params["cal_date"]
-        st.query_params.clear()
-        st.rerun()
-
-    # 사이드바 필터 뱃지 클릭 → query param 처리
-    if "toggle_cat" in st.query_params:
-        tog = st.query_params["toggle_cat"]
-        if tog in CATEGORIES:
-            st.session_state[f"cat_active_{tog}"] = not st.session_state.get(f"cat_active_{tog}", True)
-        st.query_params.clear()
-        st.rerun()
+    if "selected_categories" not in st.session_state:
+        st.session_state.selected_categories = list(CATEGORIES)
 
     # ── 사이드바 ──
     with st.sidebar:
@@ -809,46 +777,59 @@ def main() -> None:
             or secrets_key
             or os.environ.get("OPENAI_API_KEY", "")
         )
-        key_status = "🟢 API 연결됨" if has_key else "🔴 API 키 미설정"
+        key_status = "✅ API 연결됨" if has_key else "🔴 API 키 미설정"
         st.caption(key_status)
 
         st.markdown("---")
 
-        # 카테고리 필터 뱃지 (<a href> 링크, 오버레이 버튼 없음)
+        # 카테고리 필터
         all_journals_for_stat = load_journals()
-        selected_categories = []
+        selected_categories = st.session_state.selected_categories
         for cat in CATEGORIES:
-            is_active = st.session_state.get(f"cat_active_{cat}", True)
+            is_active = cat in selected_categories
             color = CATEGORY_COLORS[cat]
             cnt = sum(1 for j in all_journals_for_stat if j.get("category") == cat)
-            badge_color = color if is_active else "#bbb"
+            badge_color = color if is_active else "#bbbbbb"
             opacity = "1" if is_active else "0.5"
             r = int(badge_color[1:3], 16)
             g = int(badge_color[3:5], 16)
             b = int(badge_color[5:7], 16)
             bg = f"rgba({r},{g},{b},0.12)" if is_active else "#f0f0f0"
 
-            st.markdown(
-                f"""<a href='?toggle_cat={cat}' style='text-decoration:none'>
-                  <div style='display:flex;align-items:center;gap:8px;
-                    background:{bg};border:1.5px solid {badge_color};
-                    border-radius:20px;padding:7px 14px;margin-bottom:6px;
-                    cursor:pointer;opacity:{opacity};transition:opacity .15s'>
-                    <span style='width:10px;height:10px;border-radius:50%;
-                      background:{badge_color};flex-shrink:0'></span>
-                    <span style='font-size:13px;font-weight:600;color:#333'>{cat}</span>
-                    <span style='font-size:12px;color:#666;margin-left:auto'>{cnt}건</span>
-                    <span style='font-size:11px;color:{badge_color}'>{"✓" if is_active else ""}</span>
-                  </div>
-                </a>""",
-                unsafe_allow_html=True,
-            )
-            if is_active:
-                selected_categories.append(cat)
+            c_btn, c_badge = st.columns([1, 5], gap="small")
+            with c_btn:
+                toggled = st.button(
+                    "✓" if is_active else "○",
+                    key=f"filter_{cat}",
+                    use_container_width=True,
+                )
+            with c_badge:
+                st.markdown(
+                    f"<div style='display:flex;align-items:center;gap:8px;"
+                    f"background:{bg};border:1.5px solid {badge_color};"
+                    f"border-radius:20px;padding:5px 12px;margin-bottom:4px;"
+                    f"opacity:{opacity}'>"
+                    f"<span style='width:9px;height:9px;border-radius:50%;"
+                    f"background:{badge_color};flex-shrink:0'></span>"
+                    f"<span style='font-size:13px;font-weight:600;color:#333'>{cat}</span>"
+                    f"<span style='font-size:12px;color:#666;margin-left:auto'>{cnt}건</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            if toggled:
+                if is_active:
+                    st.session_state.selected_categories = [
+                        c for c in selected_categories if c != cat
+                    ]
+                else:
+                    st.session_state.selected_categories = selected_categories + [cat]
+                st.rerun()
 
         st.markdown("---")
-        st.markdown("### 통계")
         st.metric("전체 일지", len(all_journals_for_stat))
+        if st.button("📅 캘린더", use_container_width=True):
+            st.session_state.page = "main"
+            st.rerun()
 
     # ── 설정 페이지 ──
     if st.session_state.page == "settings":
