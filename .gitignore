@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 가상환경
+venv/
+.venv/
+env/
+.env
+
+# Streamlit 시크릿 (API 키 포함)
+.streamlit/secrets.toml
+
+# 앱 설정 (API 키 저장)
+settings.json
+
+# 데이터 파일 (로컬 전용)
+journal_data.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -4,7 +4,7 @@ import os
 import uuid
 from datetime import date, datetime, timedelta
 
-import anthropic
+from openai import OpenAI
 import pandas as pd
 import streamlit as st
 
@@ -30,15 +30,16 @@ WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
 # 사용 가능한 모델 목록
 AVAILABLE_MODELS = [
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-haiku-4-5-20251001",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-turbo",
+    "gpt-3.5-turbo",
 ]
 
 # 기본 설정값
 DEFAULT_SETTINGS = {
     "api_key": "",
-    "model": "claude-sonnet-4-20250514",
+    "model": "gpt-4o",
     "max_tokens": 1024,
     "temperature": 1.0,
 }
@@ -67,10 +68,13 @@ def save_settings(settings: dict) -> None:
 
 
 def get_settings() -> dict:
-    """세션 상태에서 설정을 반환 (없으면 파일에서 로드)."""
+    """세션 상태에서 설정을 반환 (없으면 파일에서 로드). 모델이 유효하지 않으면 기본값으로 리셋."""
     if "app_settings" not in st.session_state:
         st.session_state.app_settings = load_settings()
-    return st.session_state.app_settings
+    settings = st.session_state.app_settings
+    if settings.get("model") not in AVAILABLE_MODELS:
+        settings["model"] = DEFAULT_SETTINGS["model"]
+    return settings
 
 
 def load_journals() -> list[dict]:
@@ -131,17 +135,21 @@ def link_related_journals(target_id: str, related_ids: list[str]) -> None:
 
 # ── 3. AI 관련 함수 ──────────────────────────────────────────────────────────
 
-def get_anthropic_client() -> anthropic.Anthropic | None:
-    """Anthropic 클라이언트 생성. 설정 → secrets → 환경변수 순으로 API 키 탐색."""
+def get_openai_client() -> OpenAI | None:
+    """OpenAI 클라이언트 생성. 설정 → secrets → 환경변수 순으로 API 키 탐색."""
     settings = get_settings()
+    try:
+        secrets_key = st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:
+        secrets_key = ""
     api_key = (
         settings.get("api_key")
-        or st.secrets.get("ANTHROPIC_API_KEY", "")
-        or os.environ.get("ANTHROPIC_API_KEY", "")
+        or secrets_key
+        or os.environ.get("OPENAI_API_KEY", "")
     )
     if not api_key:
         return None
-    return anthropic.Anthropic(api_key=api_key)
+    return OpenAI(api_key=api_key)
 
 
 def _parse_json_response(text: str) -> str:
@@ -154,10 +162,10 @@ def _parse_json_response(text: str) -> str:
 
 
 def summarize_with_ai(raw_content: str) -> dict | None:
-    """Anthropic API를 호출하여 일지 내용을 요약. 실패 시 None 반환."""
-    client = get_anthropic_client()
+    """OpenAI API를 호출하여 일지 내용을 요약. 실패 시 None 반환."""
+    client = get_openai_client()
     if not client:
-        st.error("API 키가 설정되지 않았습니다. 사이드바의 ⚙️ 설정에서 Anthropic API Key를 입력해주세요.")
+        st.error("API 키가 설정되지 않았습니다. 사이드바의 ⚙️ 설정에서 OpenAI API Key를 입력해주세요.")
         return None
 
     settings = get_settings()
@@ -173,13 +181,16 @@ def summarize_with_ai(raw_content: str) -> dict | None:
     )
 
     try:
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=settings.get("model", DEFAULT_SETTINGS["model"]),
             max_tokens=settings.get("max_tokens", DEFAULT_SETTINGS["max_tokens"]),
-            system=system_prompt,
-            messages=[{"role": "user", "content": raw_content}],
+            temperature=settings.get("temperature", DEFAULT_SETTINGS["temperature"]),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": raw_content},
+            ],
         )
-        return json.loads(_parse_json_response(response.content[0].text))
+        return json.loads(_parse_json_response(response.choices[0].message.content))
     except json.JSONDecodeError as e:
         st.error(f"AI 응답 파싱 실패: {e}")
         return None
@@ -189,8 +200,8 @@ def summarize_with_ai(raw_content: str) -> dict | None:
 
 
 def recommend_related_journals(current: dict, existing: list[dict]) -> list[str]:
-    """Anthropic API를 이용해 연관 일지 id 목록을 추천. 실패 시 빈 리스트 반환."""
-    client = get_anthropic_client()
+    """OpenAI API를 이용해 연관 일지 id 목록을 추천. 실패 시 빈 리스트 반환."""
+    client = get_openai_client()
     if not client or not existing:
         return []
 
@@ -213,12 +224,12 @@ def recommend_related_journals(current: dict, existing: list[dict]) -> list[str]
     )
 
     try:
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=settings.get("model", DEFAULT_SETTINGS["model"]),
             max_tokens=256,
             messages=[{"role": "user", "content": prompt}],
         )
-        result = json.loads(_parse_json_response(response.content[0].text))
+        result = json.loads(_parse_json_response(response.choices[0].message.content))
         return result if isinstance(result, list) else []
     except Exception:
         return []
@@ -236,7 +247,7 @@ def render_settings_page() -> None:
 
     # ── API 설정 섹션 ──
     st.markdown("### 🔑 API 설정")
-    st.caption("Anthropic API 키와 모델 설정을 관리하세요")
+    st.caption("OpenAI API 키와 모델 설정을 관리하세요")
 
     # API 키 입력 (표시/숨김 토글)
     if "show_api_key" not in st.session_state:
@@ -244,12 +255,12 @@ def render_settings_page() -> None:
 
     col_key, col_toggle = st.columns([9, 1])
     with col_key:
-        key_type = "text" if st.session_state.show_api_key else "password"
+        key_type = "default" if st.session_state.show_api_key else "password"
         new_api_key = st.text_input(
-            "Anthropic API Key",
+            "OpenAI API Key",
             value=settings.get("api_key", ""),
             type=key_type,
-            placeholder="sk-ant-...",
+            placeholder="sk-proj-...",
             key="settings_api_key_input",
         )
     with col_toggle:
@@ -461,7 +472,7 @@ def render_calendar(journals: list[dict], selected_categories: list[str]) -> Non
                     st.rerun()
 
 
-def render_journal_card(journal: dict, all_journals: list[dict]) -> None:
+def render_journal_card(journal: dict, all_journals: list[dict], key_prefix: str = "") -> None:
     """일지 카드 렌더링 (expander로 상세 표시)."""
     cat = journal.get("category", "")
     color = CATEGORY_COLORS.get(cat, "#888")
@@ -492,7 +503,7 @@ def render_journal_card(journal: dict, all_journals: list[dict]) -> None:
                 value=journal.get("raw_content", ""),
                 height=150,
                 disabled=True,
-                key=f"card_content_{journal['id']}",
+                key=f"{key_prefix}card_content_{journal['id']}",
             )
 
         # 연관 일지 섹션
@@ -511,7 +522,7 @@ def render_journal_card(journal: dict, all_journals: list[dict]) -> None:
                     )
 
         # 후속 일지 작성 버튼
-        if st.button("후속 일지 작성", key=f"followup_{journal['id']}"):
+        if st.button("후속 일지 작성", key=f"{key_prefix}followup_{journal['id']}"):
             st.session_state.show_form = True
             st.session_state.prefill_related_id = journal["id"]
             st.session_state.form_mode = "new"
@@ -685,7 +696,7 @@ def render_list_view(journals: list[dict], selected_categories: list[str]) -> No
         return
 
     for j in filtered:
-        render_journal_card(j, journals)
+        render_journal_card(j, journals, key_prefix="list_")
         st.markdown("<hr style='margin:4px 0'>", unsafe_allow_html=True)
 
 
@@ -698,13 +709,26 @@ def main() -> None:
     st.markdown(
         """
         <style>
-        /* 날짜 선택 버튼 투명화 */
-        button[kind="secondary"] { opacity: 0; position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        div[data-testid="stButton"] { position: relative; }
-        /* 카드 컨테이너 */
-        .block-container { padding-top: 1rem; }
+        /* 상단 툴바·헤더·데코레이션 숨김 */
+        div[data-testid="stAppToolbar"],
+        header[data-testid="stHeader"],
+        div[data-testid="stDecoration"] { display: none !important; }
+        /* 메인 콘텐츠 상단 여백 축소 */
+        .block-container { padding-top: 0.5rem !important; }
         /* expander 스타일 */
         details summary { font-weight: bold; }
+        /* 캘린더 날짜 선택 버튼 (title 속성이 있는 것만 투명화) */
+        button[kind="secondary"][title] { opacity: 0; position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        div[data-testid="stButton"] { position: relative; }
+        /* 필터 stat 카드 높이 고정 */
+        .filter-stat { height: 36px; line-height: 24px; overflow: hidden; }
+        /* 사이드바: stMarkdownContainer 바로 뒤 stButton 을 카드 위에 오버레이 (인접 형제 선택자) */
+        [data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] + div[data-testid="stButton"] {
+            margin-top: -36px; height: 36px; z-index: 1;
+        }
+        [data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] + div[data-testid="stButton"] button {
+            opacity: 0; position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: pointer;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -721,6 +745,8 @@ def main() -> None:
         st.session_state.view_mode = "캘린더"
     if "page" not in st.session_state:
         st.session_state.page = "main"
+    if "selected_categories" not in st.session_state:
+        st.session_state.selected_categories = list(CATEGORIES)
 
     # ── 사이드바 ──
     with st.sidebar:
@@ -731,47 +757,56 @@ def main() -> None:
             )
             st.rerun()
 
-        st.markdown("---")
-        st.markdown("### 필터")
-        selected_categories = []
-        for cat in CATEGORIES:
-            color = CATEGORY_COLORS[cat]
-            checked = st.checkbox(
-                f":{cat}",
-                value=True,
-                key=f"filter_{cat}",
-            )
-            if checked:
-                selected_categories.append(cat)
-            st.markdown(
-                f"<span style='display:inline-block;width:12px;height:12px;"
-                f"border-radius:50%;background:{color};vertical-align:middle;margin-right:4px'></span>"
-                f"<span style='font-size:13px'>{cat}</span>",
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("---")
-        # API 키 상태 표시
+        # API 키 상태 (설정 버튼 바로 아래)
         settings = get_settings()
+        try:
+            secrets_key = st.secrets.get("OPENAI_API_KEY", "")
+        except Exception:
+            secrets_key = ""
         has_key = bool(
             settings.get("api_key")
-            or st.secrets.get("ANTHROPIC_API_KEY", "")
-            or os.environ.get("ANTHROPIC_API_KEY", "")
+            or secrets_key
+            or os.environ.get("OPENAI_API_KEY", "")
         )
         key_status = "🟢 API 연결됨" if has_key else "🔴 API 키 미설정"
         st.caption(key_status)
 
         st.markdown("---")
-        st.markdown("### 통계")
+
+        # st.metric 을 먼저 배치해서 --- (stMarkdownContainer) 와 캘린더 버튼 사이 인접 관계 차단
         all_journals_for_stat = load_journals()
         st.metric("전체 일지", len(all_journals_for_stat))
+
+        # 캘린더 홈 버튼: stMetric 뒤에 위치 → 필터 CSS 에 걸리지 않음
+        if st.button("📅 캘린더", use_container_width=True):
+            st.session_state.page = "main"
+            st.rerun()
+
+        # 카테고리 필터 + 통계 (클릭으로 토글)
         for cat in CATEGORIES:
             cnt = sum(1 for j in all_journals_for_stat if j.get("category") == cat)
             color = CATEGORY_COLORS[cat]
+            is_selected = cat in st.session_state.selected_categories
+            bg = CATEGORY_BG_COLORS[cat] if is_selected else "transparent"
+            border_color = color if is_selected else color + "55"
+            opacity = "1" if is_selected else "0.45"
+            # 컬러 stat 카드 (stMarkdownContainer 로 렌더링됨)
             st.markdown(
-                f"<span style='color:{color}'>●</span> {cat}: **{cnt}**건",
+                f"<div class='filter-stat' style='background:{bg};border-left:3px solid {border_color};"
+                f"padding:6px 10px;border-radius:4px;margin:2px 0;opacity:{opacity};cursor:pointer'>"
+                f"<span style='color:{color}'>●</span> {cat}: <strong>{cnt}건</strong>"
+                f"</div>",
                 unsafe_allow_html=True,
             )
+            # 투명 오버레이 버튼 (stMarkdownContainer + stButton 인접 형제 CSS 로 숨김)
+            if st.button("　", key=f"filter_btn_{cat}"):
+                if cat in st.session_state.selected_categories:
+                    st.session_state.selected_categories.remove(cat)
+                else:
+                    st.session_state.selected_categories.append(cat)
+                st.rerun()
+
+    selected_categories = st.session_state.selected_categories
 
     # ── 설정 페이지 ──
     if st.session_state.page == "settings":
@@ -824,7 +859,7 @@ def main() -> None:
                 st.markdown(f"---\n### {selected} 일지 목록 ({len(day_journals)}건)")
                 if day_journals:
                     for j in day_journals:
-                        render_journal_card(j, all_journals)
+                        render_journal_card(j, all_journals, key_prefix="cal_")
                 else:
                     st.info("선택한 날짜에 일지가 없습니다.")
 
