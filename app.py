@@ -237,6 +237,93 @@ def recommend_related_journals(current: dict, existing: list[dict]) -> list[str]
 
 # ── 4. UI 컴포넌트 함수 ──────────────────────────────────────────────────────
 
+def render_landing_page() -> None:
+    """서비스 소개 랜딩 페이지."""
+    st.markdown(
+        """
+        <div style='text-align:center;padding:72px 20px 36px'>
+            <h1 style='font-size:2.6rem;font-weight:800;color:#1a1a2e;
+                       line-height:1.35;margin-bottom:20px'>
+                오늘 뭐 했는지,<br>AI가 정리해드릴게요.
+            </h1>
+            <p style='font-size:1.1rem;color:#555;max-width:540px;
+                      margin:0 auto;line-height:1.7'>
+                생각나는 대로 자유롭게 적어도,<br>
+                AI가 배경·내용·실적 구조로 깔끔하게 정리해드립니다.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _, btn_col, _ = st.columns([3, 2, 3])
+    with btn_col:
+        if st.button("📅 업무일지 바로가기", type="primary", use_container_width=True):
+            st.session_state.page = "main"
+            st.rerun()
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    FEATURES = [
+        {
+            "icon": "✍️",
+            "title": "줄글로 써도 깔끔한 일지로",
+            "desc": (
+                "생각나는 대로 자유롭게 입력하세요. "
+                "AI가 배경·내용·실적 구조로 자동 정리해드립니다."
+            ),
+            "tag": "AI요약",
+            "color": "#1E88E5",
+            "bg": "#E3F2FD",
+        },
+        {
+            "icon": "📅",
+            "title": "한눈에 보는 내 업무 달력",
+            "desc": (
+                "회의·개발·문서 카테고리가 색상으로 표시되는 캘린더로 "
+                "한 달 업무 흐름을 한눈에 파악하세요."
+            ),
+            "tag": "캘린더 뷰",
+            "color": "#43A047",
+            "bg": "#E8F5E9",
+        },
+        {
+            "icon": "🔗",
+            "title": "과거 일지와 이어 쓰기",
+            "desc": (
+                "지난 일지를 클릭해 후속 내용을 이어 작성하거나, "
+                "AI가 연관 일지를 자동으로 추천해드립니다."
+            ),
+            "tag": "연관 일지",
+            "color": "#FB8C00",
+            "bg": "#FFF3E0",
+        },
+    ]
+
+    card_cols = st.columns(3, gap="large")
+    for col, feat in zip(card_cols, FEATURES):
+        col.markdown(
+            f"""
+            <div style='border:1.5px solid {feat["color"]}50;border-radius:16px;
+                        padding:30px 24px;background:{feat["bg"]};
+                        box-shadow:0 2px 10px rgba(0,0,0,0.06);min-height:230px'>
+                <div style='font-size:2rem;margin-bottom:14px'>{feat["icon"]}</div>
+                <div style='font-size:1rem;font-weight:700;color:#1a1a2e;margin-bottom:10px'>
+                    {feat["title"]}
+                </div>
+                <p style='font-size:0.87rem;color:#555;line-height:1.7;margin-bottom:20px'>
+                    {feat["desc"]}
+                </p>
+                <span style='background:{feat["color"]};color:white;font-size:11px;
+                             font-weight:700;padding:4px 12px;border-radius:20px'>
+                    # {feat["tag"]}
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_settings_page() -> None:
     """설정 페이지: API 키, 모델, 파라미터 설정 UI."""
     st.markdown("## ⚙️ 설정")
@@ -529,46 +616,74 @@ def render_journal_card(journal: dict, all_journals: list[dict], key_prefix: str
                         unsafe_allow_html=True,
                     )
 
-        # 후속 일지 작성 버튼
-        if st.button("후속 일지 작성", key=f"{key_prefix}followup_{journal['id']}"):
-            st.session_state.show_form = True
-            st.session_state.prefill_related_id = journal["id"]
-            st.session_state.form_mode = "new"
-            st.rerun()
+        # 후속 일지 작성 / 수정 버튼
+        col_followup, col_edit = st.columns(2)
+        with col_followup:
+            if st.button("후속 일지 작성", key=f"{key_prefix}followup_{journal['id']}"):
+                st.session_state.show_form = True
+                st.session_state.prefill_related_id = journal["id"]
+                for k in ["edit_journal_id", "form_date", "form_category", "form_title",
+                          "form_content", "form_related", "pending_summary", "pending_raw_content"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+        with col_edit:
+            if st.button("✏️ 수정", key=f"{key_prefix}edit_{journal['id']}"):
+                st.session_state.show_form = True
+                st.session_state.edit_journal_id = journal["id"]
+                st.session_state.prefill_related_id = None
+                for k in ["form_date", "form_category", "form_title", "form_content",
+                          "form_related", "pending_summary", "pending_raw_content"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
 
 def render_journal_form(prefill_related_id: str | None = None) -> None:
     """일지 작성/수정 폼 렌더링."""
-    st.subheader("새 일지 작성")
-
     all_journals = load_journals()
 
-    # 연관 일지 멀티셀렉트 옵션 구성
+    edit_id = st.session_state.get("edit_journal_id")
+    edit_journal = get_journal_by_id(edit_id, all_journals) if edit_id else None
+    is_edit = edit_journal is not None
+
+    st.subheader("✏️ 일지 수정" if is_edit else "새 일지 작성")
+
+    # 초기값: 수정 모드면 기존 데이터, 신규면 기본값
+    init_date = date.fromisoformat(edit_journal["date"]) if is_edit else date.today()
+    init_cat_idx = (
+        CATEGORIES.index(edit_journal["category"])
+        if is_edit and edit_journal.get("category") in CATEGORIES
+        else 0
+    )
+    init_title = edit_journal.get("title", "") if is_edit else ""
+    init_content = edit_journal.get("raw_content", "") if is_edit else ""
+    init_related_ids = edit_journal.get("related_ids", []) if is_edit else []
+
+    # 연관 일지 옵션 (수정 중인 일지 자신 제외)
     options = {
         f"[{j.get('date','')}] {j.get('title','제목 없음')} ({j.get('category','')})": j["id"]
         for j in all_journals
+        if j["id"] != (edit_id or "")
     }
     option_labels = list(options.keys())
 
-    # prefill 처리
-    prefill_label = None
-    if prefill_related_id:
-        prefill_label = next(
-            (lbl for lbl, jid in options.items() if jid == prefill_related_id), None
-        )
+    if is_edit:
+        default_selection = [lbl for lbl, jid in options.items() if jid in init_related_ids]
+    elif prefill_related_id:
+        prefill_label = next((lbl for lbl, jid in options.items() if jid == prefill_related_id), None)
+        default_selection = [prefill_label] if prefill_label else []
+    else:
+        default_selection = []
 
     with st.form("journal_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            selected_date = st.date_input("날짜", value=date.today(), key="form_date")
+            selected_date = st.date_input("날짜", value=init_date, key="form_date")
         with col2:
-            category = st.selectbox("카테고리", CATEGORIES, key="form_category")
+            category = st.selectbox("카테고리", CATEGORIES, index=init_cat_idx, key="form_category")
 
-        title = st.text_input("제목", key="form_title")
-        raw_content = st.text_area("내용", height=200, key="form_content")
+        title = st.text_input("제목", value=init_title, key="form_title")
+        raw_content = st.text_area("내용", value=init_content, height=200, key="form_content")
 
-        # 연관 일지 선택
-        default_selection = [prefill_label] if prefill_label else []
         selected_related_labels = st.multiselect(
             "연관 일지 선택",
             options=option_labels,
@@ -579,7 +694,9 @@ def render_journal_form(prefill_related_id: str | None = None) -> None:
 
         col_save, col_ai = st.columns(2)
         with col_save:
-            save_clicked = st.form_submit_button("저장", type="primary")
+            save_clicked = st.form_submit_button(
+                "💾 수정 저장" if is_edit else "저장", type="primary"
+            )
         with col_ai:
             ai_clicked = st.form_submit_button("AI 요약")
 
@@ -595,11 +712,15 @@ def render_journal_form(prefill_related_id: str | None = None) -> None:
                 st.session_state.pending_raw_content = raw_content
                 st.success("AI 요약 완료!")
 
-    # 요약 결과 표시 (폼 밖에서 유지)
+    # 요약 결과 표시: 새 AI 요약 우선, 없으면 기존 요약(수정 모드)
     if "pending_summary" in st.session_state:
         st.markdown("---")
         st.markdown("#### AI 요약 결과")
         render_summary_output(st.session_state.pending_summary)
+    elif is_edit and edit_journal.get("summary"):
+        st.markdown("---")
+        st.markdown("#### 기존 AI 요약")
+        render_summary_output(edit_journal["summary"])
 
     # 저장 처리
     if save_clicked:
@@ -611,38 +732,50 @@ def render_journal_form(prefill_related_id: str | None = None) -> None:
             return
 
         now = datetime.now().isoformat()
-        journal_id = str(uuid.uuid4())
-        new_journal = {
-            "id": journal_id,
-            "date": selected_date.isoformat(),
-            "category": category,
-            "title": title.strip(),
-            "raw_content": raw_content.strip(),
-            "summary": st.session_state.pop("pending_summary", None),
-            "related_ids": related_ids,
-            "created_at": now,
-            "updated_at": now,
-        }
 
-        # 저장 및 양방향 연관 연결
-        add_or_update_journal(new_journal)
-        if related_ids:
-            link_related_journals(journal_id, related_ids)
+        if is_edit:
+            updated_journal = {
+                **edit_journal,
+                "date": selected_date.isoformat(),
+                "category": category,
+                "title": title.strip(),
+                "raw_content": raw_content.strip(),
+                "summary": st.session_state.pop("pending_summary", edit_journal.get("summary")),
+                "related_ids": related_ids,
+                "updated_at": now,
+            }
+            add_or_update_journal(updated_journal)
+            if related_ids:
+                link_related_journals(edit_id, related_ids)
+            st.success(f"일지가 수정되었습니다: {title}")
+            st.session_state.pop("edit_journal_id", None)
+        else:
+            journal_id = str(uuid.uuid4())
+            new_journal = {
+                "id": journal_id,
+                "date": selected_date.isoformat(),
+                "category": category,
+                "title": title.strip(),
+                "raw_content": raw_content.strip(),
+                "summary": st.session_state.pop("pending_summary", None),
+                "related_ids": related_ids,
+                "created_at": now,
+                "updated_at": now,
+            }
+            add_or_update_journal(new_journal)
+            if related_ids:
+                link_related_journals(journal_id, related_ids)
+            st.success(f"일지가 저장되었습니다: {title}")
 
-        st.success(f"일지가 저장되었습니다: {title}")
+            existing = load_journals()
+            with st.spinner("AI 연관 일지 추천 분석 중..."):
+                recommended_ids = recommend_related_journals(new_journal, existing)
 
-        # AI 연관 일지 추천 (백그라운드 역할 — 저장 직후 실행)
-        existing = load_journals()
-        with st.spinner("AI 연관 일지 추천 분석 중..."):
-            recommended_ids = recommend_related_journals(new_journal, existing)
+            new_recommendations = [r for r in recommended_ids if r not in related_ids and r != journal_id]
+            if new_recommendations:
+                st.session_state.ai_recommendations = new_recommendations
+                st.session_state.ai_rec_for = journal_id
 
-        # 이미 연결된 항목 제외
-        new_recommendations = [r for r in recommended_ids if r not in related_ids and r != journal_id]
-        if new_recommendations:
-            st.session_state.ai_recommendations = new_recommendations
-            st.session_state.ai_rec_for = journal_id
-
-        # 폼 상태 초기화
         st.session_state.show_form = False
         st.session_state.prefill_related_id = None
         st.session_state.pop("pending_raw_content", None)
@@ -719,7 +852,7 @@ def main() -> None:
         <style>
         div[data-testid="stAppToolbar"],
         div[data-testid="stDecoration"] { display: none !important; }
-        .block-container { padding-top: 0.5rem !important; }
+        .block-container { padding-top: 3rem !important; }
         details summary { font-weight: bold; }
         [data-testid="stTabs"] [data-testid="stColumn"] button[kind="secondary"][title] {
             height: 50px !important; min-height: 50px !important;
@@ -752,7 +885,7 @@ def main() -> None:
     if "view_mode" not in st.session_state:
         st.session_state.view_mode = "캘린더"
     if "page" not in st.session_state:
-        st.session_state.page = "main"
+        st.session_state.page = "landing"
 
     if "selected_categories" not in st.session_state:
         st.session_state.selected_categories = list(CATEGORIES)
@@ -827,9 +960,17 @@ def main() -> None:
 
         st.markdown("---")
         st.metric("전체 일지", len(all_journals_for_stat))
-        if st.button("📅 캘린더", use_container_width=True):
+        if st.button("🏠 홈", use_container_width=True):
+            st.session_state.page = "landing"
+            st.rerun()
+        if st.button("📅 업무일지", use_container_width=True):
             st.session_state.page = "main"
             st.rerun()
+
+    # ── 랜딩 페이지 ──
+    if st.session_state.page == "landing":
+        render_landing_page()
+        return
 
     # ── 설정 페이지 ──
     if st.session_state.page == "settings":
@@ -844,6 +985,9 @@ def main() -> None:
         if st.button("＋ 새 일지", type="primary"):
             st.session_state.show_form = True
             st.session_state.prefill_related_id = None
+            for k in ["edit_journal_id", "form_date", "form_category", "form_title",
+                      "form_content", "form_related", "pending_summary", "pending_raw_content"]:
+                st.session_state.pop(k, None)
             st.rerun()
 
     all_journals = load_journals()
@@ -856,7 +1000,8 @@ def main() -> None:
             if st.button("✕ 닫기", key="close_form"):
                 st.session_state.show_form = False
                 st.session_state.prefill_related_id = None
-                st.session_state.pop("pending_summary", None)
+                for k in ["edit_journal_id", "pending_summary", "pending_raw_content"]:
+                    st.session_state.pop(k, None)
                 st.rerun()
         st.markdown("---")
 
